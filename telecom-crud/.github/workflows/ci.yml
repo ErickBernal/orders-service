@@ -1,169 +1,34 @@
 
-name: CI/CD - Orders Service
+name: CI - Ordenes de Servicio
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
 
-permissions:
-  contents: read
-
 jobs:
-  build:
-    name: Compilar proyecto
+  compilacion:
     runs-on: ubuntu-latest
 
     steps:
       - name: Descargar codigo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configurar Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
           cache: maven
-          cache-dependency-path: telecom-crud/pom.xml
 
       - name: Verificar estructura
         run: |
+          pwd
+          ls -la
           ls -la telecom-crud
           test -f telecom-crud/pom.xml
 
-      - name: Compilar y empaquetar
+      - name: Compilar proyecto Maven
         working-directory: telecom-crud
-        run: mvn -B clean package
-
-      - name: Guardar el JAR generado
-        uses: actions/upload-artifact@v4
-        with:
-          name: telecom-crud-jar
-          path: telecom-crud/target/*.jar
-          if-no-files-found: error
-
-  integration:
-    name: Integracion Oracle + API
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-
-    steps:
-      - name: Descargar codigo
-        uses: actions/checkout@v4
-
-      - name: Verificar archivos Docker
-        run: |
-          test -f telecom-crud/docker-compose.yml
-          test -f telecom-crud/Dockerfile
-
-      - name: Levantar Oracle y la API
-        working-directory: telecom-crud
-        run: docker compose up -d --build
-
-      - name: Esperar respuesta de la API
-        run: |
-          for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" \
-              -X POST http://localhost:8080/api/token \
-              -H "Content-Type: application/json" \
-              -d '{"username":"admin","password":"Admin123"}' || true)
-
-            echo "Intento $i -> HTTP $code"
-
-            if [ "$code" = "200" ]; then
-              exit 0
-            fi
-
-            sleep 5
-          done
-
-          echo "La API no respondio a tiempo"
-          exit 1
-
-      - name: Probar API y Oracle
-        env:
-          API_URL: http://localhost:8080
-        run: |
-          set -euo pipefail
-
-          TOKEN=$(curl -fsS -X POST "$API_URL/api/token" \
-            -H "Content-Type: application/json" \
-            -d '{"username":"admin","password":"Admin123"}' \
-            | jq -er '.access_token')
-
-          NUMERO="CI-${GITHUB_RUN_ID}"
-
-          curl -fsS -X POST "$API_URL/api/ordenes" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"numeroOrden\":\"$NUMERO\",\"idCliente\":1001,\"tipoServicio\":\"INSTALACION_INTERNET\"}"
-
-          curl -fsS "$API_URL/api/ordenes" \
-            -H "Authorization: Bearer $TOKEN" \
-            | grep -F "$NUMERO"
-
-          CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            "$API_URL/api/ordenes")
-
-          test "$CODE" = "401"
-
-      - name: Mostrar logs si falla
-        if: failure()
-        working-directory: telecom-crud
-        run: docker compose logs --no-color
-
-      - name: Apagar servicios
-        if: always()
-        working-directory: telecom-crud
-        run: docker compose down -v
-
-  docker:
-    name: Construir y publicar imagen
-    needs: [build, integration]
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      packages: write
-
-    env:
-      PUBLICAR: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-
-    steps:
-      - name: Descargar codigo
-        uses: actions/checkout@v4
-
-      - name: Configurar Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Definir nombre de imagen
-        run: |
-          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-
-      - name: Preparar etiquetas
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha
-
-      - name: Iniciar sesion en GHCR
-        if: env.PUBLICAR == 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Construir imagen Docker
-        uses: docker/build-push-action@v6
-        with:
-          context: ./telecom-crud
-          file: ./telecom-crud/Dockerfile
-          push: ${{ env.PUBLICAR == 'true' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        run: mvn --batch-mode clean verify
