@@ -1,34 +1,126 @@
-
-name: CI - Ordenes de Servicio
+name: CI/CD
 
 on:
   push:
-    branches:
-      - "**"
   pull_request:
 
 jobs:
-  compilacion:
+  build:
+    name: Compilar proyecto
     runs-on: ubuntu-latest
-
     steps:
-      - name: Descargar codigo
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Configurar Java 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
           cache: maven
 
-      - name: Verificar estructura
-        run: |
-          pwd
-          ls -la
-          ls -la telecom-crud
-          test -f telecom-crud/pom.xml
+      - name: Compilar y empaquetar (Maven)
+        run: mvn -B clean package
 
-      - name: Compilar proyecto Maven
-        working-directory: telecom-crud
-        run: mvn --batch-mode clean verify
+      - name: Guardar el JAR generado
+        uses: actions/upload-artifact@v4
+        with:
+          name: telecom-crud-jar
+          path: target/*.jar
+          if-no-files-found: error
+
+  integration:
+    name: Integración (Oracle + API)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Levantar Oracle y la app con docker compose
+        run: docker compose up -d --build
+
+      - name: Esperar a que la API responda
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8080/api/token \
+              -H "Content-Type: application/json" \
+              -d '{"username":"admin","password":"Admin123"}' || true)
+            echo "intento $i -> HTTP $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 5
+          done
+          echo "La API no respondió a tiempo"
+          docker compose logs
+          exit 1
+
+      - name: Probar API contra la base de datos
+        run: |
+          TOKEN=$(curl -sf -X POST http://localhost:8080/api/token \
+            -H "Content-Type: application/json" \
+            -d '{"username":"admin","password":"Admin123"}' | jq -r .access_token)
+
+          # Crear una orden (escribe en Oracle)
+          curl -sf -X POST http://localhost:8080/api/ordenes \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"numeroOrden\":\"CI-${GITHUB_RUN_ID}\",\"idCliente\":1001,\"tipoServicio\":\"INSTALACION_INTERNET\"}"
+
+          # Listarla (lee de Oracle)
+          curl -sf http://localhost:8080/api/ordenes \
+            -H "Authorization: Bearer $TOKEN" | grep "CI-${GITHUB_RUN_ID}"
+
+          # Sin token debe dar 401
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/ordenes)
+          [ "$code" = "401" ]
+
+      - name: Logs (si algo falló)
+        if: failure()
+        run: docker compose logs
+
+      - name: Apagar servicios
+        if: always()
+        run: docker compose down -v
+
+  docker:
+    name: Construir y publicar imagen Docker
+    needs: [build, integration]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUBLICAR: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Iniciar sesión en GitHub Container Registry
+        if: env.PUBLICAR == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Nombre de imagen en minúsculas
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Etiquetas de la imagen
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha
+
+      - name: Construir (y publicar si es main)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ env.PUBLICAR == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
