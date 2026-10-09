@@ -11,31 +11,26 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Descargar el repositorio
       - name: Descargar codigo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      # 2. Configurar Java 17 y Maven
       - name: Configurar Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
           cache: maven
 
-      # 3. Compilar el proyecto
       - name: Compilar proyecto Maven
         run: mvn --batch-mode clean package
 
-      # 4. Preparar Docker Buildx
       - name: Configurar Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 5. Construir imagen Docker
       - name: Construir imagen Docker
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: false
-          tags: ordenes-servicio:latest
+          tags: orders-service:latest
