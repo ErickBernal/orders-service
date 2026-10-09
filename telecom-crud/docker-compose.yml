@@ -10,11 +10,29 @@ services:
       APP_USER_PASSWORD: "Telecom123"
     volumes:
       - oracle-data:/opt/oracle/oradata
+      - ./db/init:/container-entrypoint-initdb.d:ro
+      - ./db/schema.sql:/schema/schema.sql:ro
     healthcheck:
       test: ["CMD", "healthcheck.sh"]
       interval: 10s
       timeout: 5s
       retries: 20
+    restart: unless-stopped
+
+  app:
+    build: .                    
+    image: telecom-crud:latest
+    container_name: telecom-app
+    depends_on:
+      oracle:
+        condition: service_healthy 
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: "jdbc:oracle:thin:@//oracle:1521/FREEPDB1"
+      SPRING_DATASOURCE_USERNAME: "app_telecom"
+      SPRING_DATASOURCE_PASSWORD: "Telecom123"
+      APP_JWT_SECRET: "cambiar-este-secreto-por-uno-de-32-caracteres-o-mas"
     restart: unless-stopped
 
 volumes:
