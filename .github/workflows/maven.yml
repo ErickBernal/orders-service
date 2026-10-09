@@ -41,15 +41,22 @@ jobs:
             -e APP_USER=orders \
             -e APP_USER_PASSWORD=orders_pass \
             -v ${{ github.workspace }}/DB:/container-entrypoint-initdb.d \
+            --health-cmd healthcheck.sh \
+            --health-interval 10s \
+            --health-timeout 5s \
+            --health-retries 30 \
+            --health-start-period 30s \
             gvenzl/oracle-free:23-slim-faststart
 
       - name: Wait for Oracle
         working-directory: .
         run: |
-          for i in $(seq 1 40); do
-            status=$(docker inspect --format='{{.State.Health.Status}}' oracle)
-            echo "Oracle: $status"
-            [ "$status" = "healthy" ] && exit 0
+          for i in $(seq 1 60); do
+            if docker logs oracle 2>&1 | grep -q "DATABASE IS READY TO USE!"; then
+              echo "Oracle listo"
+              exit 0
+            fi
+            echo "Esperando Oracle... ($i)"
             sleep 5
           done
           docker logs oracle
