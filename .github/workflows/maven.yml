@@ -1,34 +1,65 @@
-
-name: CI - Ordenes de Servicio
+name: Java CI with Maven
 
 on:
   push:
-    branches:
-      - "**"
+    branches: [ main ]
   pull_request:
+    branches: [ main ]
 
 jobs:
-  compilacion:
+  build:
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Descargar codigo
-        uses: actions/checkout@v5
+    defaults:
+      run:
+        working-directory: telecom-crud   # el pom.xml está en esta subcarpeta
 
-      - name: Configurar Java 21
-        uses: actions/setup-java@v5
+    env:
+      SPRING_DATASOURCE_URL: jdbc:oracle:thin:@//localhost:1521/FREEPDB1
+      SPRING_DATASOURCE_USERNAME: orders
+      SPRING_DATASOURCE_PASSWORD: orders_pass
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}   # tu JWT, guardado como secret
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: "21"
+          java-version: '17'
+          distribution: 'temurin'
           cache: maven
 
-      - name: Verificar estructura
+      # Oracle con los scripts de la carpeta DB como inicialización
+      - name: Start Oracle
+        working-directory: .
         run: |
-          pwd
-          ls -la
-          ls -la telecom-crud
-          test -f telecom-crud/pom.xml
+          docker run -d --name oracle \
+            -p 1521:1521 \
+            -e ORACLE_PASSWORD=oracle_admin \
+            -e APP_USER=orders \
+            -e APP_USER_PASSWORD=orders_pass \
+            -v ${{ github.workspace }}/DB:/container-entrypoint-initdb.d \
+            gvenzl/oracle-free:23-slim-faststart
 
-      - name: Compilar proyecto Maven
-        working-directory: telecom-crud
-        run: mvn --batch-mode clean verify
+      - name: Wait for Oracle
+        working-directory: .
+        run: |
+          for i in $(seq 1 40); do
+            status=$(docker inspect --format='{{.State.Health.Status}}' oracle)
+            echo "Oracle: $status"
+            [ "$status" = "healthy" ] && exit 0
+            sleep 5
+          done
+          docker logs oracle
+          exit 1
+
+      - name: Build and test
+        run: mvn -B clean verify
+
+      - name: Upload JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: telecom-crud-jar
+          path: telecom-crud/target/*.jar
